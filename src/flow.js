@@ -1336,23 +1336,23 @@
      * Finish preprocess state
      * @function
      */
-    preprocessFinished: function () {
+    preprocessFinished: async function () {
       // Re-compute the endByte after the preprocess function to allow an
       // implementer of preprocess to set the fileObj size
       this.endByte = this.computeEndByte();
 
       this.preprocessState = 2;
-      this.send();
+      await this.send();
     },
 
     /**
      * Finish read state
      * @function
      */
-    readFinished: function (bytes) {
+    readFinished: async function (bytes) {
       this.readState = 2;
       this.bytes = bytes;
-      this.send();
+      await this.send();
     },
 
 
@@ -1360,7 +1360,7 @@
      * Uploads the actual data in a POST call
      * @function
      */
-    send: function () {
+    send: async function () {
       var preprocess = this.flowObj.opts.preprocess;
       var read = this.flowObj.opts.readFileFn;
       if (typeof preprocess === 'function') {
@@ -1376,7 +1376,11 @@
       switch (this.readState) {
         case 0:
           this.readState = 1;
-          read(this.fileObj, this.startByte, this.endByte, this.fileObj.file.type, this);
+          if (read.constructor.name == 'AsyncFunction') {
+              await read(this.fileObj, this.startByte, this.endByte, this.fileObj.file.type, this);
+          } else {
+              read(this.fileObj, this.startByte, this.endByte, this.fileObj.file.type, this);
+          }
           return;
         case 1:
           return;
