@@ -375,7 +375,8 @@ export default class FlowChunk {
       }
     }
 
-    if (asyncRead) {
+    // If chunk already read (state = 2) and pendingRetry is true, then only the upload must be retried.
+    if (asyncRead && !this.pendingRetry) {
       this.readState = 1;
       await this.readStreamChunk();
       return;
