@@ -80,6 +80,8 @@ export default class Flow extends EventTarget {
       generateUniqueIdentifier: null,
       maxChunkRetries: 0,
       chunkRetryInterval: null,
+      chunkChecksum: null,
+      allowShortStream: false,
       xhrTimeout: 0,
       permanentErrors: [404, 413, 415, 500, 501],
       testNotFoundStatuses: [404],
@@ -395,6 +397,7 @@ export default class Flow extends EventTarget {
    */
   *filterFileList(fileList, event) {
     var ie10plus = window.navigator.msPointerEnabled;
+    const batchIdentifiers = new Set();
 
     for (let file of fileList) {
       // https://github.com/flowjs/flow.js/issues/55
@@ -404,9 +407,12 @@ export default class Flow extends EventTarget {
       }
 
       var uniqueIdentifier = this.generateUniqueIdentifier(file);
-      if (!this.opts.allowDuplicateUploads && this.getFromUniqueIdentifier(uniqueIdentifier)) {
+      if (!this.opts.allowDuplicateUploads &&
+          (batchIdentifiers.has(uniqueIdentifier) ||
+           this.getFromUniqueIdentifier(uniqueIdentifier))) {
         continue;
       }
+      batchIdentifiers.add(uniqueIdentifier);
 
       yield [file, uniqueIdentifier];
     }

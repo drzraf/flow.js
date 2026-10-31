@@ -36,6 +36,7 @@ export default class FlowChunk {
      */
     this.payload = undefined;
     this.readBytes = -1;
+    this.checksum = null;
 
     this.loaded = 0;
     this.total = 0;
@@ -178,6 +179,11 @@ export default class FlowChunk {
       }
     }
 
+    if (this.payload !== null &&
+        typeof this.flowObj.opts.chunkChecksum === 'function') {
+      this.checksum = await this.flowObj.opts.chunkChecksum(this, this.payload);
+    }
+
     return this.payload;
   }
 
@@ -194,9 +200,15 @@ export default class FlowChunk {
       if (this.fileObj.size === 0) {
         // An empty file still deserves exactly one zero-byte request.
         payload = new Blob([]);
-      } else {
-        // A reader may report EOF before the expected chunk count.
+      } else if (this.flowObj.opts.allowShortStream) {
+        // Opt-in compatibility for streams whose declared size is an upper
+        // bound. Silent truncation is otherwise treated as an error.
         return this._succeed('');
+      } else {
+        return this._fail({
+          responseText: `Unexpected EOF at chunk ${this.offset + 1}/` +
+            `${this.fileObj.chunks.length}; the file may be truncated`
+        });
       }
     }
 
@@ -323,8 +335,10 @@ export default class FlowChunk {
     this._responseText = message || '';
     this.uploadState.resolve({status: 'success', message: this._responseText});
     this.event('success', this._responseText);
-    // Free the payload after a successful upload.
+    // Free the payload after a successful upload. A later force-retry must
+    // read (and checksum) the data again.
     this.payload = undefined;
+    this.checksum = null;
     return 'success';
   }
 
@@ -422,7 +436,7 @@ export default class FlowChunk {
   }
 
   getParams() {
-    return {
+    var params = {
       flowChunkNumber: this.offset + 1,
       flowChunkSize: this.chunkSize,
       flowCurrentChunkSize: this.endByte - this.startByte,
@@ -432,6 +446,10 @@ export default class FlowChunk {
       flowRelativePath: this.fileObj.relativePath,
       flowTotalChunks: this.fileObj.chunks.length
     };
+    if (this.checksum !== null && typeof this.checksum !== 'undefined') {
+      params.flowChunkHash = this.checksum;
+    }
+    return params;
   }
 
   getTarget(target, params) {

@@ -179,19 +179,30 @@ export default class FlowFile {
     const hasFailure = this.chunks.some(chunk =>
       chunk.state === 'error' || chunk.state === 'cancelled'
     );
-    for (const chunk of this.chunks) {
-      // Retry failed chunks after an error. If the file was fully uploaded,
-      // retry() re-uploads the whole file (useful to re-run with new options).
-      if (hasFailure && chunk.state !== 'error' && chunk.state !== 'cancelled') {
-        continue;
+    const needsReset = this.chunks.some(chunk =>
+      (chunk.state === 'error' || chunk.state === 'cancelled') &&
+      typeof chunk.payload === 'undefined'
+    );
+    if (needsReset) {
+      // A read failure has no cached payload. The source position is unknown
+      // (especially for a stream), so reinitialize via initFileFn and rebuild
+      // all chunks instead of reading a partially consumed stream.
+      await this.bootstrap({event: null, flow: this.flowObj});
+    } else {
+      for (const chunk of this.chunks) {
+        // Retry failed chunks after an error. If the file was fully uploaded,
+        // retry() re-uploads the whole file (useful to re-run with new options).
+        if (hasFailure && chunk.state !== 'error' && chunk.state !== 'cancelled') {
+          continue;
+        }
+        chunk.state = 'pending';
+        chunk.retries = 0;
+        chunk.pendingRetry = false;
+        chunk.tested = false;
+        chunk._abortReason = null;
+        // Keep a cached payload if the reader already produced one. For
+        // non-rewindable streams this is what makes retry safe.
       }
-      chunk.state = 'pending';
-      chunk.retries = 0;
-      chunk.pendingRetry = false;
-      chunk.tested = false;
-      chunk._abortReason = null;
-      // Keep a cached payload if the reader already produced one. For
-      // non-rewindable streams this is what makes retry safe.
     }
     return this.flowObj._resumeFiles([this]);
   }
