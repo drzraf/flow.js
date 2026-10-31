@@ -106,6 +106,18 @@ is the multipart file field named by `fileParameterName`. With
 `method: 'octet'` the payload is the raw request body and the parameters are in
 the query string.
 
+With `streaming: true` the client does not know the final size up front:
+
+- `flowTotalSize` is `-1`.
+- `flowIsStreaming` is `true`.
+- `flowChunkIsLast` is `false` on data chunks and `true` on a final zero-byte
+  marker chunk.
+- `flowTotalChunks` grows as chunks are appended.
+
+A streaming-aware server must reassemble by `flowChunkNumber` and treat the
+zero-byte `flowChunkIsLast` chunk as EOF. It must not require the first
+request's total size/chunk count to be final.
+
 Servers must tolerate the same chunk being uploaded more than once (for example
 after a retry).
 
@@ -144,6 +156,9 @@ new Flow({
   permanentErrors: [404, 413, 415, 500, 501],
   maxChunkRetries: 0,
   chunkRetryInterval: null,      // milliseconds; null = immediate
+  chunkChecksum: null,           // async (chunk, payload) => string
+  allowShortStream: false,       // opt-in for overestimated stream sizes
+  streaming: false,              // dynamic chunks for unknown/estimated sizes
   xhrTimeout: 0,                 // milliseconds; 0 = no timeout
   withCredentials: false,
   query: {},
@@ -194,9 +209,63 @@ const flow = new Flow({
 A zero-length `Blob` is a valid payload. `null` means “no data / EOF”. This is
 what allows empty files to be uploaded correctly (#375).
 
-If a non-rewindable stream fails permanently and you want to retry, provide a
-new stream from `initFileFn` before calling `file.retry()`. Cached payloads are
-reused for retries when available.
+For a non-empty file, a `null`/`undefined` result before the final chunk is
+treated as a truncation error by default. Set `allowShortStream: true` only if
+the declared size is an intentional upper bound. This prevents silently short
+uploads.
+
+If a non-rewindable stream fails on read and there is no cached payload,
+`file.retry()` re-runs `initFileFn` and rebuilds the chunk list instead of
+reading a partially consumed stream. `initFileFn` must provide a fresh source
+in that case. Cached payloads are reused for upload retries.
+
+For truly unknown or estimated sizes, set `streaming: true`. `flowObj.size`
+may be `0` (unknown) or an estimate used only for pre-created chunks/progress;
+chunks are appended dynamically until the reader returns `null`/undefined or
+an empty slice after the first chunk. Only active chunks are buffered: initial
+chunks use `simultaneousUploads`; after an estimate is exhausted, probe chunks
+are created one at a time. A GB-scale encrypted stream therefore keeps only a
+few chunks' payloads in memory, never the whole input.
+
+`streaming` disables `prioritizeFirstAndLastChunk` (a sequential stream cannot
+seek). `testChunks` is usually not useful for one-shot streams; use `false`.
+Progress with `size === 0` is `0` until completion, then `1`; with an estimate,
+the estimate is the denominator until EOF.
+
+A read that completes while pause/cancel/error is racing is cached, not
+discarded, because a stateful reader (GPG packetizer, stream cipher, ...) has
+already consumed those bytes. If a stateful reader honors the abort signal and
+aborts after consuming bytes, those bytes cannot be recovered; either ignore
+the signal on pause (the completed buffer is cached) or provide a replayable
+source via `initFileFn`.
+
+### Integrity checks
+
+`chunkChecksum(chunk, payload)` may return a string or promise. It is computed
+once per payload and sent as `flowChunkHash`; the value is cached and reused on
+retries, so a stateful reader/encryptor is never re-run for the same chunk.
+The server should verify the hash against the exact received chunk body.
+
+```js
+new Flow({
+  target: '/upload',
+  chunkChecksum: async (chunk, payload) => {
+    const buffer = payload instanceof Blob
+      ? await payload.arrayBuffer()
+      : payload;
+    const digest = await crypto.subtle.digest('SHA-256', buffer);
+    return 'sha256-' + Array.from(new Uint8Array(digest))
+      .map(byte => byte.toString(16).padStart(2, '0'))
+      .join('');
+  }
+});
+```
+
+For a whole-file checksum, compute it in `initFileFn` (which may be async) and
+add it to the request via `query` or `headers`; the server verifies it after
+reassembly. This is the recommended pattern for on-the-fly encryption: hash the
+ciphertext exactly as uploaded, or hash the plaintext in `initFileFn` and
+verify after decryption.
 
 ## Events
 
@@ -334,8 +403,8 @@ node scripts/run-browser-tests.mjs --browser all --coverage
 node scripts/coverage-report.mjs
 ```
 
-Current Chromium coverage: **97.4% statements, 86.3% branches, 97.9%
-functions, 97.6% lines** over 119 specs. The suite covers the adapted v3 tests,
+Current Chromium coverage: **97.4% statements, 86.7% branches, 98.0%
+functions, 97.6% lines** over 145 specs. The suite covers the adapted v3 tests,
 targeted #368/#375 regressions, transport error/timeout/abort paths, test-request
 success/404/retry paths, empty/EOF/ArrayBuffer/string readers, retries, pause,
 cancel, priority scheduling, hooks, seeded randomized stress/invariants, and

@@ -17,6 +17,19 @@ async upload session.
    It receives an `AbortSignal`; pause/cancel during a read no longer uploads
    the stale result (#368).
  - Empty files send exactly one zero-byte request (#375).
+ - Optional per-chunk checksums (`chunkChecksum`), sent as `flowChunkHash` and
+   cached across retries; server verification is documented.
+ - Premature EOF on a non-empty file is a truncation error by default
+   (`allowShortStream` is the explicit opt-in).
+ - Duplicate identifiers within one `addFiles` batch are filtered.
+ - A retry after an uncached read failure reinitializes via `initFileFn` and
+   rebuilds chunks instead of reading a partially consumed stream.
+ - A completed read is cached even when pause/cancel/error races with it, so a
+   stateful reader/encryptor does not lose consumed stream bytes.
+ - Add `streaming: true` for unknown/estimated-size inputs: dynamic chunk
+   creation until EOF, a zero-byte `flowChunkIsLast` marker, bounded buffering,
+   and pause/resume/retry/read-error handling. This removes the need for a
+   fragile ciphertext-size estimate.
  - Retries are loops with abortable delays, not recursive `send()` calls.
  - Native `EventTarget` + `CustomEvent`; no global `EventTarget.prototype`
    patching.
@@ -24,9 +37,11 @@ async upload session.
    `filesSubmitted`); no name-based hook/event dispatch.
  - Zero runtime dependencies. No Babel/core-js/regenerator in the distributed
    build.
- - Browser test suite expanded to 84 specs: adapted v3 tests, targeted
-   regressions, seeded randomized stress/invariant checks, and real-network
-   upload/retry tests.
+ - Browser test suite expanded to 145 specs: adapted v3 tests, targeted
+   regressions, transport/error edge cases, streaming/dynamic-size tests,
+   seeded randomized stress/invariant checks, and real-network upload/retry
+   tests. Chromium coverage: 97.4% statements / 86.7% branches; CI runs
+   Chromium, Firefox and WebKit.
 
 ## Breaking changes
 

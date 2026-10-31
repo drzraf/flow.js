@@ -177,8 +177,13 @@ successfully, it re-uploads the whole file (useful when changing query
 parameters).
 
 For a non-rewindable stream, a read failure cannot be recovered by reading the
-same stream again. Recreate the stream in `initFileFn` and then call
-`file.retry()`. Error chunks keep their cached payload when one is available.
+same stream again. When an error chunk has no cached payload, `file.retry()`
+re-runs `initFileFn` and rebuilds the chunks; provide a fresh stream there.
+Error chunks with a cached payload are retried without re-reading, so a
+stateful encryptor is not re-run for already-produced ciphertext. A read that
+completes while pause/cancel/error is racing is cached for the same reason; a
+stateful reader that aborts after consuming bytes must provide a replayable
+source instead.
 
 ## Chunk states
 
@@ -194,6 +199,16 @@ file is complete but not successful; use `isSuccessful()`.
 - `testNotFoundStatuses` (default `[404]`): a test response that means “chunk
   does not exist, upload it”.
 - `xhrTimeout` (default `0`): per-request timeout in milliseconds.
+- `chunkChecksum` (default `null`): optional async `(chunk, payload) => string`
+  digest of the exact payload; sent as `flowChunkHash` and cached across
+  retries.
+- `allowShortStream` (default `false`): opt-in compatibility for a declared
+  size that is only an upper bound. By default a `null` reader result before
+  the final chunk is a truncation error, not a silent success.
+- `streaming` (default `false`): create chunks dynamically until the reader
+  reaches EOF. `flowTotalSize` is `-1`, `flowTotalChunks` grows, and a
+  zero-byte `flowChunkIsLast` marker ends the upload. This is the mode for
+  unknown/estimated-size encrypted streams.
 - `hooks`: explicit hook configuration.
 
 `method: 'octet'` puts upload parameters in the query string and sends the raw
