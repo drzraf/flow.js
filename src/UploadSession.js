@@ -1,4 +1,5 @@
 import Deferred from './Deferred.js';
+import FlowChunk from './FlowChunk.js';
 
 /**
  * One upload session per Flow instance.
@@ -71,6 +72,13 @@ export default class UploadSession {
         continue;
       }
       if (!this._hasPending()) {
+        if (this._createNextStreamChunk()) {
+          continue;
+        }
+        if (this._hasPausedStreaming()) {
+          await this._waitForWork();
+          continue;
+        }
         return this._finish('complete');
       }
       // All remaining chunks belong to paused files. Wait for resume/addFiles.
@@ -101,6 +109,29 @@ export default class UploadSession {
       }
     }
     return false;
+  }
+
+  _createNextStreamChunk() {
+    let created = false;
+    for (const file of this.flow.files) {
+      if (!file.streaming || file.eof || file.paused ||
+          file.error || file.cancelled) {
+        continue;
+      }
+      if (file.chunks.every(chunk =>
+        ['success', 'error', 'cancelled'].includes(chunk.state))) {
+        file.chunks.push(new FlowChunk(file.flowObj, file, file.chunks.length));
+        created = true;
+      }
+    }
+    return created;
+  }
+
+  _hasPausedStreaming() {
+    return this.flow.files.some(file =>
+      file.streaming && !file.eof && file.paused &&
+      !file.error && !file.cancelled
+    );
   }
 
   _waitForWork() {
@@ -212,7 +243,7 @@ export default class UploadSession {
 
     if (this.flow.opts.prioritizeFirstAndLastChunk) {
       for (const file of this.flow.files) {
-        if (file.paused || file.error || file.cancelled) {
+        if (file.streaming || file.paused || file.error || file.cancelled) {
           continue;
         }
         const first = file.chunks[0];

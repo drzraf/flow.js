@@ -49,6 +49,7 @@ export default class FlowChunk {
     this.xhr = null;
 
     this.state = 'pending';
+    this.isLastChunk = false;
     this._abortReason = null;
     this._controller = null;
     this._uploadPromise = null;
@@ -57,6 +58,12 @@ export default class FlowChunk {
   }
 
   computeEndByte() {
+    if (this.fileObj.streaming) {
+      if (this.fileObj.size > 0 && this.startByte < this.fileObj.size) {
+        return Math.min(this.fileObj.size, this.startByte + this.chunkSize);
+      }
+      return this.startByte + this.chunkSize;
+    }
     var endByte = Math.min(this.fileObj.size, (this.offset + 1) * this.chunkSize);
     if (this.fileObj.size - endByte < this.chunkSize && !this.flowObj.opts.forceChunkSize) {
       // The last chunk will be bigger than the chunk size,
@@ -213,19 +220,60 @@ export default class FlowChunk {
       return this.state;
     }
 
+    this.isLastChunk = false;
+    if (this.fileObj.streaming && this.fileObj.eof &&
+        this.offset === this.fileObj.eofOffset) {
+      this.isLastChunk = true;
+    }
     if (payload === null || typeof payload === 'undefined') {
-      if (this.fileObj.size === 0) {
+      if (this.fileObj.streaming) {
+        if (this.fileObj.eof && this.offset > this.fileObj.eofOffset) {
+          this.endByte = this.startByte;
+          return this._succeed('');
+        }
+        this.fileObj.eof = true;
+        this.fileObj.eofOffset = this.offset;
+        this.isLastChunk = true;
+        this.endByte = this.startByte;
+        // Pre-created estimate chunks beyond EOF are never sent.
+        for (const other of this.fileObj.chunks) {
+          if (other.offset > this.offset &&
+              !['success', 'error', 'cancelled'].includes(other.state)) {
+            other.endByte = other.startByte;
+            other.state = 'success';
+            other.uploadState.resolve({status: 'success'});
+          }
+        }
+        // Send a zero-byte final marker so a streaming server knows the end
+        // even when the last data chunk was exactly full.
+        payload = new Blob([]);
+      } else if (this.fileObj.size === 0) {
         // An empty file still deserves exactly one zero-byte request.
         payload = new Blob([]);
       } else if (this.flowObj.opts.allowShortStream) {
         // Opt-in compatibility for streams whose declared size is an upper
         // bound. Silent truncation is otherwise treated as an error.
+        this.fileObj.eof = true;
         return this._succeed('');
       } else {
         return this._fail({
           responseText: `Unexpected EOF at chunk ${this.offset + 1}/` +
             `${this.fileObj.chunks.length}; the file may be truncated`
         });
+      }
+    } else if (this.fileObj.streaming && payload.size === 0 && this.offset > 0) {
+      // Blob-backed streaming sources signal EOF with an empty slice.
+      this.fileObj.eof = true;
+      this.fileObj.eofOffset = this.offset;
+      this.isLastChunk = true;
+      this.endByte = this.startByte;
+      for (const other of this.fileObj.chunks) {
+        if (other.offset > this.offset &&
+            !['success', 'error', 'cancelled'].includes(other.state)) {
+          other.endByte = other.startByte;
+          other.state = 'success';
+          other.uploadState.resolve({status: 'success'});
+        }
       }
     }
 
@@ -464,6 +512,11 @@ export default class FlowChunk {
       flowRelativePath: this.fileObj.relativePath,
       flowTotalChunks: this.fileObj.chunks.length
     };
+    if (this.fileObj.streaming) {
+      params.flowTotalSize = -1;
+      params.flowIsStreaming = 'true';
+      params.flowChunkIsLast = this.isLastChunk ? 'true' : 'false';
+    }
     if (this.checksum !== null && typeof this.checksum !== 'undefined') {
       params.flowChunkHash = this.checksum;
     }

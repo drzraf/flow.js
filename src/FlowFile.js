@@ -24,6 +24,9 @@ export default class FlowFile {
     this.cancelled = false;
     this.error = false;
     this.errorMessage = null;
+    this.streaming = !!flowObj.opts.streaming;
+    this.eof = false;
+    this.eofOffset = null;
 
     this.averageSpeed = 0;
     this.currentSpeed = 0;
@@ -217,6 +220,8 @@ export default class FlowFile {
 
   _bootstrap() {
     this.chunks = [];
+    this.eof = false;
+    this.eofOffset = null;
     this.error = false;
     this.errorMessage = null;
     this._successEmitted = false;
@@ -244,7 +249,7 @@ export default class FlowFile {
       this._prevProgress = Math.max(this._prevProgress, this.chunks[0].progress());
       return this._prevProgress;
     }
-    if (this.size === 0) {
+    if (this.size === 0 || (this.streaming && this.size <= 0)) {
       return this.isComplete() ? 1 : 0;
     }
     var bytesLoaded = 0;
@@ -252,6 +257,12 @@ export default class FlowFile {
       bytesLoaded += chunk.progress() * (chunk.endByte - chunk.startByte);
     });
     var percent = bytesLoaded / this.size;
+    if (this.streaming) {
+      if (this.eof && this.isComplete()) {
+        return 1;
+      }
+      percent = Math.min(percent, 0.9999);
+    }
     this._prevProgress = Math.max(this._prevProgress, percent > 0.9999 ? 1 : percent);
     return this._prevProgress;
   }
@@ -269,13 +280,15 @@ export default class FlowFile {
    * complete but not successful.
    */
   isComplete() {
-    return this.chunks.every(chunk =>
-      ['success', 'error', 'cancelled'].includes(chunk.state)
-    );
+    return (this.error || !this.streaming || this.eof) &&
+      this.chunks.every(chunk =>
+        ['success', 'error', 'cancelled'].includes(chunk.state)
+      );
   }
 
   isSuccessful() {
     return !this.error &&
+      (!this.streaming || this.eof) &&
       this.chunks.length > 0 &&
       this.chunks.every(chunk => chunk.state === 'success');
   }

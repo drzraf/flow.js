@@ -82,6 +82,7 @@ export default class Flow extends EventTarget {
       chunkRetryInterval: null,
       chunkChecksum: null,
       allowShortStream: false,
+      streaming: false,
       xhrTimeout: 0,
       permanentErrors: [404, 413, 415, 500, 501],
       testNotFoundStatuses: [404],
