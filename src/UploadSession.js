@@ -23,7 +23,7 @@ export default class UploadSession {
   start() {
     if (!this.started) {
       this.started = true;
-      this.flow.emit('upload-start');
+      this.flow._emit('upload-start', {files: this.flow.files});
       this._run().catch(error => this._finishWithError(error));
     }
     return this.promise;
@@ -33,7 +33,7 @@ export default class UploadSession {
     if (this.finished) {
       return this.flow.upload();
     }
-    this.flow.emit('upload-resume');
+    this.flow._emit('upload-resume', {files: this.flow.files});
     this.wake();
     return this.promise;
   }
@@ -244,7 +244,7 @@ export default class UploadSession {
     this.wake();
     const summary = this._summary(status);
     if (status === 'complete') {
-      this.flow.emit('complete');
+      this.flow._emit('complete', {summary, files: this.flow.files});
     }
     this._deferred.resolve(summary);
   }
@@ -256,7 +256,10 @@ export default class UploadSession {
     this.finished = true;
     this._abort();
     this.wake();
-    this.flow.emit('error', error && error.message || String(error));
+    this.flow._emit('error', {
+      message: error && error.message || String(error),
+      error
+    });
     this._deferred.resolve(Object.assign(this._summary('complete'), {
       status: 'error',
       error

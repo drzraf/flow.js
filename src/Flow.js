@@ -2,7 +2,6 @@
  * @license MIT
  */
 
-import Eventizer from './Eventizer.js';
 import FlowFile from './FlowFile.js';
 import UploadSession from './UploadSession.js';
 import {each} from './tools.js';
@@ -40,9 +39,9 @@ import {each} from './tools.js';
  * @param {Function} [opts.generateUniqueIdentifier]
  * @constructor
  */
-export default class Flow extends Eventizer {
-  constructor(opts, events) {
-    super(events);
+export default class Flow extends EventTarget {
+  constructor(opts) {
+    super();
 
     Flow.version = '<%= version %>';
 
@@ -82,6 +81,7 @@ export default class Flow extends Eventizer {
       testNotFoundStatuses: [404],
       successStatuses: [200, 201, 202],
       onDropStopPropagation: false,
+      hooks: {},
       initFileFn: null,
       readFileFn: (fileObj, startByte, endByte, fileType) =>
         fileObj.file.slice(startByte, endByte, fileType)
@@ -91,6 +91,58 @@ export default class Flow extends Eventizer {
 
     this._onDropBound = null;
     this._session = null;
+  }
+
+  /**
+   * Dispatch a native CustomEvent and then the catch-all event.
+   * The detail always contains the event type and the flow instance.
+   */
+  _emit(type, detail = {}) {
+    const payload = Object.assign({type, flow: this}, detail);
+    this.dispatchEvent(new CustomEvent(type, {detail: payload}));
+    this._emitCatchAll(type, payload, false);
+    return payload;
+  }
+
+  _emitCatchAll(type, detail, hook) {
+    this.dispatchEvent(new CustomEvent('catch-all', {
+      detail: {type, hook, detail}
+    }));
+  }
+
+  /**
+   * Run all callbacks for a named hook. Filters are AND-ed; actions run in
+   * order and may mutate their arguments. Hook errors are reported through
+   * the `error` event and do not break the add pipeline.
+   */
+  async _runHook(name, ...args) {
+    const configured = (this.opts.hooks || {})[name];
+    const callbacks = configured === undefined
+      ? []
+      : (Array.isArray(configured) ? configured : [configured]);
+    let result = true;
+    for (const callback of callbacks) {
+      if (typeof callback !== 'function') {
+        continue;
+      }
+      try {
+        const value = await callback(...args);
+        if (name === 'filterFile' && value === false) {
+          result = false;
+        }
+      } catch (error) {
+        this._emit('error', {
+          message: error && error.message || String(error),
+          error,
+          hook: name
+        });
+        if (name === 'filterFile') {
+          result = false;
+        }
+      }
+    }
+    this._emitCatchAll(name, {name, args}, true);
+    return result;
   }
 
   async onDrop(event) {
@@ -103,7 +155,7 @@ export default class Flow extends Eventizer {
         dataTransfer.items[0].webkitGetAsEntry) {
       this.webkitReadDataTransfer(event);
     } else {
-      await this.addFiles(dataTransfer.files, event);
+      await this.addFiles(dataTransfer.files, {event});
     }
   }
 
@@ -115,7 +167,7 @@ export default class Flow extends Eventizer {
     var queue = event.dataTransfer.items.length;
     var decrement = () => {
       if (--queue === 0) {
-        this.addFiles(files, event);
+        this.addFiles(files, {event});
       }
     };
 
@@ -208,7 +260,7 @@ export default class Flow extends Eventizer {
       input.addEventListener('change', async e => {
         if (e.target.value) {
           input.setAttribute('readonly', 'readonly');
-          await this.addFiles(e.target.files, e);
+          await this.addFiles(e.target.files, {event: e});
           e.target.value = '';
           input.removeAttribute('readonly');
         }
@@ -310,7 +362,7 @@ export default class Flow extends Eventizer {
     }
     await Promise.all(files.map(file => file.abort('cancelled')));
     for (const file of files) {
-      this.emit('file-removed', file);
+      this._emit('file-removed', {file});
     }
     if (session) {
       await session.promise.catch(() => {});
@@ -353,30 +405,42 @@ export default class Flow extends Eventizer {
     }
   }
 
-  async addFile(file, ...args) {
-    return (await this.addFiles([file], ...args))[0];
+  async addFile(file, options = {}) {
+    return (await this.addFiles([file], options))[0];
   }
 
-  async addFiles(fileList, event = null, initFileFn = this.opts.initFileFn) {
+  /**
+   * Add files.
+   * @param {FileList|Array} fileList
+   * @param {Object} [options] {event, initFileFn}
+   * @returns {Promise<FlowFile[]>}
+   */
+  async addFiles(fileList, options = {}) {
+    options = options || {};
+    const event = options.event || null;
+    const initFileFn = Object.prototype.hasOwnProperty.call(options, 'initFileFn')
+      ? options.initFileFn
+      : this.opts.initFileFn;
+    const context = {event, flow: this};
     let item, file, uniqueIdentifier, states = [];
     const iterator = this.filterFileList(fileList, event);
 
     while ((item = iterator.next()) && !item.done) {
       [file, uniqueIdentifier] = item.value;
-      if (!await this.hook('filter-file', file, event)) {
+      if (!await this._runHook('filterFile', file, context)) {
         continue;
       }
 
       var flowFile = new FlowFile(this, file, uniqueIdentifier);
-      states.push(flowFile.bootstrap(event, initFileFn));
+      states.push(flowFile.bootstrap(context, initFileFn));
     }
 
     var flowfiles = await Promise.all(states);
     for (let flowfile of flowfiles) {
-      await this.hook('file-added', flowfile, event);
+      await this._runHook('fileAdded', flowfile, context);
     }
 
-    await this.hook('files-added', flowfiles, event);
+    await this._runHook('filesAdded', flowfiles, context);
 
     flowfiles = flowfiles.filter(entry => entry && entry.file);
     for (let flowfile of flowfiles) {
@@ -385,7 +449,7 @@ export default class Flow extends Eventizer {
       }
       this.files.push(flowfile);
     }
-    await this.hook('files-submitted', this.files, event);
+    await this._runHook('filesSubmitted', this.files, context);
 
     if (this._session && !this._session.finished) {
       this._session.wake();
@@ -404,7 +468,7 @@ export default class Flow extends Eventizer {
     }
     this.files.splice(index, 1);
     await file.abort('cancelled');
-    this.emit('file-removed', file);
+    this._emit('file-removed', {file});
     if (this._session && !this._session.finished) {
       this._session.wake();
     }

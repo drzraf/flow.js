@@ -55,8 +55,16 @@ export default class FlowFile {
           break;
         }
         this.measureSpeed();
-        this.flowObj.emit('file-progress', this, chunk);
-        this.flowObj.emit('progress');
+        this.flowObj._emit('file-progress', {
+          file: this,
+          chunk,
+          progress: this.progress()
+        });
+        this.flowObj._emit('progress', {
+          file: this,
+          chunk,
+          progress: this.flowObj.progress()
+        });
         this._lastProgressCallback = Date.now();
         break;
 
@@ -78,8 +86,8 @@ export default class FlowFile {
           other.state = 'error';
           other.uploadState.resolve({status: 'error', message: this.errorMessage});
         }
-        this.flowObj.emit('file-error', this, message, chunk);
-        this.flowObj.emit('error', message, this, chunk);
+        this.flowObj._emit('file-error', {file: this, message, chunk});
+        this.flowObj._emit('error', {message, file: this, chunk});
         break;
 
       case 'success':
@@ -87,19 +95,27 @@ export default class FlowFile {
           return;
         }
         this.measureSpeed();
-        this.flowObj.emit('file-progress', this, chunk);
-        this.flowObj.emit('progress');
+        this.flowObj._emit('file-progress', {
+          file: this,
+          chunk,
+          progress: this.progress()
+        });
+        this.flowObj._emit('progress', {
+          file: this,
+          chunk,
+          progress: this.flowObj.progress()
+        });
         this._lastProgressCallback = Date.now();
         if (this.isComplete() && !this._successEmitted) {
           this._successEmitted = true;
           this.currentSpeed = 0;
           this.averageSpeed = 0;
-          this.flowObj.emit('file-success', this, message, chunk);
+          this.flowObj._emit('file-success', {file: this, message, chunk});
         }
         break;
 
       case 'retry':
-        this.flowObj.emit('file-retry', this, chunk);
+        this.flowObj._emit('file-retry', {file: this, chunk});
         break;
     }
   }
@@ -150,7 +166,7 @@ export default class FlowFile {
 
   async retry() {
     if (this.chunks.length === 0) {
-      await this.bootstrap('retry');
+      await this.bootstrap({event: null, flow: this.flowObj});
     }
     this.error = false;
     this.errorMessage = null;
@@ -180,9 +196,9 @@ export default class FlowFile {
     return this.flowObj._resumeFiles([this]);
   }
 
-  async bootstrap(event = null, initFileFn = this.flowObj.opts.initFileFn) {
+  async bootstrap(context = {}, initFileFn = this.flowObj.opts.initFileFn) {
     if (typeof initFileFn === 'function') {
-      await initFileFn(this, event);
+      await initFileFn(this, context);
     }
     this._bootstrap();
     return this;
