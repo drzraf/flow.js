@@ -50,6 +50,7 @@ var g = typeof window !== 'undefined' ? window
     : typeof global !== 'undefined' ? global
     : typeof self !== 'undefined' ? self : {};
 g.evalOpts = evalOpts;
+g.FlowTools = {abortableSleep, each, evalOpts, sleep};
 
 
 /**

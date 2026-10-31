@@ -43,13 +43,17 @@ export default class Flow extends EventTarget {
   constructor(opts) {
     super();
 
-    Flow.version = '<%= version %>';
-
-    this.supportDirectory = (
-      /Chrome/.test(window.navigator.userAgent) ||
-      /Firefox/.test(window.navigator.userAgent) ||
-      /Edge/.test(window.navigator.userAgent)
-    );
+    this.supportDirectory = (() => {
+      if (typeof document === 'undefined') {
+        return false;
+      }
+      const input = document.createElement('input');
+      return 'webkitdirectory' in input ||
+        'mozdirectory' in input ||
+        'odirectory' in input ||
+        'msdirectory' in input ||
+        'directory' in input;
+    })();
 
     this.files = [];
 
@@ -258,10 +262,13 @@ export default class Flow extends EventTarget {
         input.setAttribute(key, value);
       });
       input.addEventListener('change', async e => {
-        if (e.target.value) {
+        // Capture the node before awaiting: event.target may be cleared once
+        // the synchronous dispatch ends.
+        const target = e.target || input;
+        if (target.value) {
           input.setAttribute('readonly', 'readonly');
-          await this.addFiles(e.target.files, {event: e});
-          e.target.value = '';
+          await this.addFiles(target.files, {event: e});
+          target.value = '';
           input.removeAttribute('readonly');
         }
       }, false);
@@ -518,3 +525,5 @@ export default class Flow extends EventTarget {
     return Math.floor(sizeDelta / averageSpeed);
   }
 }
+
+Flow.version = typeof __FLOW_VERSION__ === 'string' ? __FLOW_VERSION__ : 'dev';

@@ -101,3 +101,11 @@ export function sendRequest({
     }
   });
 }
+
+/**
+ * Exclusively for test purposes.
+ */
+var g = typeof window !== 'undefined' ? window
+    : typeof global !== 'undefined' ? global
+    : typeof self !== 'undefined' ? self : {};
+g.FlowTransport = {sendRequest};

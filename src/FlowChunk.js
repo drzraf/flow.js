@@ -316,7 +316,10 @@ export default class FlowChunk {
     if (this._controller) {
       this._controller.abort();
     }
-    if (this.state === 'reading' || this.state === 'uploading' || this.state === 'retrying') {
+    // A read cannot be interrupted synchronously. Leave it in 'reading'
+    // until the reader settles; the session discards the result if the file
+    // was paused or cancelled meanwhile.
+    if (this.state === 'uploading' || this.state === 'retrying') {
       this.state = reason === 'cancelled' || reason === 'error' ? reason : 'pending';
     }
   }
@@ -333,7 +336,12 @@ export default class FlowChunk {
       this.uploadState = new Deferred();
     }
     const payload = await this.read(signal);
-    if (this.fileObj.paused || this.fileObj.cancelled) {
+    if (this.fileObj.cancelled) {
+      this.state = 'cancelled';
+      this.uploadState.resolve({status: 'cancelled'});
+      return 'cancelled';
+    }
+    if (this.fileObj.paused) {
       this.state = 'pending';
       this.uploadState.resolve({status: 'pending'});
       return 'pending';
