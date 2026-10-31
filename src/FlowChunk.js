@@ -102,6 +102,22 @@ export default class FlowChunk {
 
     this.readState = 1;
     this.state = 'reading';
+
+    // Give the reader its own cancellable signal. The session signal is
+    // linked in, so a session pause/cancel and a per-file pause/cancel both
+    // abort the read. A reader that ignores the signal is still discarded by
+    // the state checks below.
+    const controller = new AbortController();
+    this._controller = controller;
+    const onParentAbort = () => controller.abort();
+    if (signal) {
+      if (signal.aborted) {
+        controller.abort();
+      } else {
+        signal.addEventListener('abort', onParentAbort, {once: true});
+      }
+    }
+
     let data;
     try {
       data = await this.flowObj.opts.readFileFn(
@@ -110,10 +126,31 @@ export default class FlowChunk {
         this.endByte,
         this.fileObj.file.type,
         this,
-        {signal}
+        {signal: controller.signal}
       );
+    } catch (error) {
+      if (controller.signal.aborted ||
+          this.fileObj.paused ||
+          this.fileObj.cancelled ||
+          this.fileObj.error) {
+        return null;
+      }
+      throw error;
     } finally {
+      if (signal) {
+        signal.removeEventListener('abort', onParentAbort);
+      }
+      if (this._controller === controller) {
+        this._controller = null;
+      }
       this.readState = 2;
+    }
+
+    if (controller.signal.aborted ||
+        this.fileObj.paused ||
+        this.fileObj.cancelled ||
+        this.fileObj.error) {
+      return null;
     }
 
     if (data === null || typeof data === 'undefined') {
@@ -340,6 +377,11 @@ export default class FlowChunk {
       this.state = 'cancelled';
       this.uploadState.resolve({status: 'cancelled'});
       return 'cancelled';
+    }
+    if (this.fileObj.error) {
+      this.state = 'error';
+      this.uploadState.resolve({status: 'error', message: this.fileObj.errorMessage || ''});
+      return 'error';
     }
     if (this.fileObj.paused) {
       this.state = 'pending';

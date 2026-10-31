@@ -163,9 +163,21 @@ export default class UploadSession {
       try {
         payload = await chunk.read(signal);
       } catch (error) {
-        if (signal.aborted || this.cancelled) {
-          chunk.state = 'pending';
+        if (this.cancelled || signal.aborted) {
+          chunk.state = this.cancelled ? 'cancelled' : 'pending';
           return;
+        }
+        if (file.cancelled) {
+          chunk.state = 'cancelled';
+          continue;
+        }
+        if (file.error) {
+          chunk.state = 'error';
+          continue;
+        }
+        if (file.paused) {
+          chunk.state = 'pending';
+          continue;
         }
         chunk.state = 'error';
         chunk._responseText = String(error && error.message || error);
@@ -174,11 +186,19 @@ export default class UploadSession {
         continue;
       }
 
-      if (signal.aborted || this.cancelled) {
-        chunk.state = 'pending';
+      if (this.cancelled || signal.aborted) {
+        chunk.state = this.cancelled ? 'cancelled' : 'pending';
         return;
       }
-      if (file.paused || file.error || file.cancelled) {
+      if (file.cancelled) {
+        chunk.state = 'cancelled';
+        continue;
+      }
+      if (file.error) {
+        chunk.state = 'error';
+        continue;
+      }
+      if (file.paused) {
         chunk.state = 'pending';
         continue;
       }
