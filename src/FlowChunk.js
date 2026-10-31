@@ -37,6 +37,7 @@ export default class FlowChunk {
     this.payload = undefined;
     this.readBytes = -1;
     this.checksum = null;
+    this._checksumComputed = false;
 
     this.loaded = 0;
     this.total = 0;
@@ -86,6 +87,12 @@ export default class FlowChunk {
    */
   async read(signal) {
     if (this.payload !== undefined) {
+      if (this.payload !== null &&
+          !this._checksumComputed &&
+          typeof this.flowObj.opts.chunkChecksum === 'function') {
+        this.checksum = await this.flowObj.opts.chunkChecksum(this, this.payload);
+        this._checksumComputed = true;
+      }
       return this.payload;
     }
 
@@ -119,6 +126,17 @@ export default class FlowChunk {
       }
     }
 
+    if (controller.signal.aborted) {
+      if (signal) {
+        signal.removeEventListener('abort', onParentAbort);
+      }
+      if (this._controller === controller) {
+        this._controller = null;
+      }
+      this.readState = 2;
+      return null;
+    }
+
     let data;
     try {
       data = await this.flowObj.opts.readFileFn(
@@ -147,16 +165,14 @@ export default class FlowChunk {
       this.readState = 2;
     }
 
-    if (controller.signal.aborted ||
-        this.fileObj.paused ||
-        this.fileObj.cancelled ||
-        this.fileObj.error) {
-      return null;
-    }
-
+    // Cache the completed read even if pause/cancel/error raced with it. A
+    // stateful reader (stream cipher, GPG packetizer, ...) has already
+    // consumed those bytes; discarding them would corrupt the stream on
+    // resume. The session still decides whether to upload this payload.
     if (data === null || typeof data === 'undefined') {
       this.payload = null;
       this.readBytes = 0;
+      this._checksumComputed = true;
     } else {
       if (typeof data === 'string') {
         data = new Blob([data], {type: 'application/octet-stream'});
@@ -182,6 +198,7 @@ export default class FlowChunk {
     if (this.payload !== null &&
         typeof this.flowObj.opts.chunkChecksum === 'function') {
       this.checksum = await this.flowObj.opts.chunkChecksum(this, this.payload);
+      this._checksumComputed = true;
     }
 
     return this.payload;
@@ -339,6 +356,7 @@ export default class FlowChunk {
     // read (and checksum) the data again.
     this.payload = undefined;
     this.checksum = null;
+    this._checksumComputed = false;
     return 'success';
   }
 
